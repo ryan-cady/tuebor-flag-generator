@@ -792,9 +792,13 @@ function loadFromHashInput() {
     if (!hash) return;
     const ok = applyStateHash(hash);
     if (ok) {
-        history.replaceState(null, '', '?s=' + hash);
+        cancelAnimationFrame(rafId);
+        rafId = null;
+        paused = true;
+        pauseBtn.textContent = 'Play';
+        pauseBtn.classList.add('active');
+        try { history.replaceState(null, '', '?s=' + hash); } catch {}
         input.classList.remove('invalid');
-        if (paused) frame();
     } else {
         input.classList.add('invalid');
         setTimeout(() => input.classList.remove('invalid'), 1000);
