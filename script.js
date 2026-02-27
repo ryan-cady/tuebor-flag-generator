@@ -13,8 +13,22 @@ src.width    = SRC_W;
 src.height   = SRC_H;
 const srcCtx = src.getContext('2d');
 
+// Two-gate readiness: state restore only runs after BOTH img and svgText are ready,
+// so img.onload can't overwrite srcCtx after reloadSVG has already run.
+let imgLoaded         = false;
+let pendingStateHash  = new URLSearchParams(location.search).get('s');
+
+function onBothReady() {
+    if (!imgLoaded || !svgText) return;
+    if (pendingStateHash) {
+        applyStateHash(pendingStateHash);
+        document.getElementById('hash-input').value = pendingStateHash;
+        pendingStateHash = null;
+    }
+}
+
 const img = new Image(2099, 1399);
-img.onload  = () => { srcCtx.drawImage(img, 0, 0, SRC_W, SRC_H); startAnimation(); };
+img.onload  = () => { srcCtx.drawImage(img, 0, 0, SRC_W, SRC_H); startAnimation(); imgLoaded = true; onBothReady(); };
 img.onerror = () => console.error('Could not load tuebor-flag-example.svg');
 img.src     = 'tuebor-flag-example.svg';
 
@@ -76,7 +90,8 @@ function encodeStateHash() {
 function applyStateHash(encoded) {
     let vals;
     try {
-        vals = JSON.parse(atob(encoded.replace(/-/g, '+').replace(/_/g, '/')));
+        const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+        vals = JSON.parse(atob(b64 + '='.repeat((4 - b64.length % 4) % 4)));
     } catch { return false; }
     if (!Array.isArray(vals) || vals.length !== STATE_SCHEMA.length) return false;
     STATE_SCHEMA.forEach(({ id, type }, i) => {
@@ -480,7 +495,7 @@ function frame() {
     const nowMs = Date.now();
     if (nowMs - lastUrlUpdate > 500) {
         const hash = encodeStateHash();
-        history.replaceState(null, '', '?s=' + hash);
+        try { history.replaceState(null, '', '?s=' + hash); } catch {}
         document.getElementById('hash-input').value = hash;
         lastUrlUpdate = nowMs;
     }
@@ -757,17 +772,15 @@ function applyShape(name) {
 
 fetch('tuebor-flag-example.svg').then(r => r.text()).then(t => {
     svgText = t;
-    const urlHash = new URLSearchParams(location.search).get('s');
-    if (urlHash) {
-        applyStateHash(urlHash);
-        document.getElementById('hash-input').value = urlHash;
-    }
+    onBothReady();
 });
 
 // ── hash bar ──────────────────────────────────────────────────────────────────
 function loadFromHashInput() {
     const input = document.getElementById('hash-input');
-    const hash  = input.value.trim();
+    let hash = input.value.trim();
+    // Accept full URLs — extract the ?s= param if present
+    try { const p = new URL(hash).searchParams.get('s'); if (p) hash = p; } catch {}
     if (!hash) return;
     const ok = applyStateHash(hash);
     if (ok) {
