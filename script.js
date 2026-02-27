@@ -36,6 +36,69 @@ Object.keys(FMT).forEach(id => {
 });
 const v = id => parseFloat(document.getElementById('sl-' + id).value);
 
+// ── state hash encode / decode ─────────────────────────────────────────────────
+// Encodes all controls into a compact base64url string that can be pasted into
+// the URL (?s=…) to restore the exact same flag state.
+const STATE_SCHEMA = [
+    { id: 'amp',                type: 'slider' },
+    { id: 'speed',              type: 'slider' },
+    { id: 'freq',               type: 'slider' },
+    { id: 'angle',              type: 'slider' },
+    { id: 'chaos',              type: 'slider' },
+    { id: 'hfold',              type: 'slider' },
+    { id: 'vfold',              type: 'slider' },
+    { id: 'droop',              type: 'slider' },
+    { id: 'crinkle',            type: 'slider' },
+    { id: 'shading',            type: 'slider' },
+    { id: 'persp',              type: 'slider' },
+    { id: 'outline',            type: 'slider' },
+    { id: 'flaglevels',         type: 'slider' },
+    { id: 'dintensity',         type: 'slider' },
+    { id: 'sel-flag-dither',    type: 'select' },
+    { id: 'sel-shadow-dither',  type: 'select' },
+    { id: 'sel-outline-dither', type: 'select' },
+    { id: 'sel-shape',          type: 'select' },
+    { id: 'cp-bg',              type: 'color'  },
+    { id: 'cp-text',            type: 'color'  },
+    { id: 'cp-shadow-color',    type: 'color'  },
+];
+
+function encodeStateHash() {
+    const vals = STATE_SCHEMA.map(({ id, type }) =>
+        type === 'slider'
+            ? parseFloat(document.getElementById('sl-' + id).value)
+            : document.getElementById(id).value
+    );
+    return btoa(JSON.stringify(vals))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function applyStateHash(encoded) {
+    let vals;
+    try {
+        vals = JSON.parse(atob(encoded.replace(/-/g, '+').replace(/_/g, '/')));
+    } catch { return false; }
+    if (!Array.isArray(vals) || vals.length !== STATE_SCHEMA.length) return false;
+    STATE_SCHEMA.forEach(({ id, type }, i) => {
+        const val = vals[i];
+        if (type === 'slider') {
+            const el = document.getElementById('sl-' + id);
+            if (!el) return;
+            el.value = val;
+            const lbl = document.getElementById('lbl-' + id);
+            if (lbl) lbl.textContent = FMT[id](val);
+        } else {
+            const el = document.getElementById(id);
+            if (el) el.value = val;
+        }
+    });
+    currentBgColor   = document.getElementById('cp-bg').value;
+    currentTextColor = document.getElementById('cp-text').value;
+    currentShape     = document.getElementById('sel-shape').value;
+    if (svgText) reloadSVG();
+    return true;
+}
+
 // ── mesh constants ────────────────────────────────────────────────────────────
 const COLS = 52;
 const ROWS = 30;
@@ -211,9 +274,10 @@ function drawTri(A, B, C) {
 }
 
 // ── animation loop ────────────────────────────────────────────────────────────
-let time   = 0;
-let paused = false;
-let rafId  = null;
+let time          = 0;
+let paused        = false;
+let rafId         = null;
+let lastUrlUpdate = 0;
 
 const BASE_PAD = 48;
 
@@ -412,6 +476,15 @@ function frame() {
         }
     }
 
+    // ── sync URL and hash input with current state (throttled to ~2×/sec) ────
+    const nowMs = Date.now();
+    if (nowMs - lastUrlUpdate > 500) {
+        const hash = encodeStateHash();
+        history.replaceState(null, '', '?s=' + hash);
+        document.getElementById('hash-input').value = hash;
+        lastUrlUpdate = nowMs;
+    }
+
     if (!paused) {
         time += speed * 0.022;
         rafId = requestAnimationFrame(frame);
@@ -442,10 +515,12 @@ function getTimestamp() {
 }
 
 function getSettingsText(displayTime) {
-    const lbl = id => document.getElementById('lbl-' + id).textContent;
+    const lbl  = id => document.getElementById('lbl-' + id).textContent;
+    const hash = encodeStateHash();
     return [
         'TUEBOR FLAG EXPORT',
         `Exported: ${displayTime}`,
+        `State:    ${hash}`,
         '',
         'WAVE',
         `  Amount:       ${lbl('amp')} px`,
@@ -501,7 +576,8 @@ document.getElementById('btn-export').addEventListener('click', () => {
         pauseBtn.classList.add('active');
     }
 
-    const ts  = getTimestamp();
+    const ts        = getTimestamp();
+    const shortHash = encodeStateHash().slice(0, 8);
     const w   = canvas.width;
     const h   = canvas.height;
     const png = canvas.toDataURL('image/png');
@@ -512,8 +588,8 @@ document.getElementById('btn-export').addEventListener('click', () => {
         `</svg>`,
     ].join('\n');
 
-    downloadBlob(`tuebor-flag_${ts.file}.svg`, new Blob([svgStr], { type: 'image/svg+xml' }));
-    downloadBlob(`tuebor-flag_${ts.file}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
+    downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.svg`, new Blob([svgStr], { type: 'image/svg+xml' }));
+    downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
 
     if (wasPlaying) {
         paused = false;
@@ -525,12 +601,13 @@ document.getElementById('btn-export').addEventListener('click', () => {
 
 // ── export PNG ────────────────────────────────────────────────────────────────
 document.getElementById('btn-export-png').addEventListener('click', () => {
-    const ts = getTimestamp();
-    downloadBlob(`tuebor-flag_${ts.file}.png`, new Blob(
+    const ts        = getTimestamp();
+    const shortHash = encodeStateHash().slice(0, 8);
+    downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.png`, new Blob(
         [Uint8Array.from(atob(canvas.toDataURL('image/png').split(',')[1]), c => c.charCodeAt(0))],
         { type: 'image/png' }
     ));
-    downloadBlob(`tuebor-flag_${ts.file}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
+    downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
 });
 
 // ── star shape replacement ────────────────────────────────────────────────────
@@ -678,7 +755,47 @@ function applyShape(name) {
     reloadSVG();
 }
 
-fetch('tuebor-flag-example.svg').then(r => r.text()).then(t => { svgText = t; });
+fetch('tuebor-flag-example.svg').then(r => r.text()).then(t => {
+    svgText = t;
+    const urlHash = new URLSearchParams(location.search).get('s');
+    if (urlHash) {
+        applyStateHash(urlHash);
+        document.getElementById('hash-input').value = urlHash;
+    }
+});
+
+// ── hash bar ──────────────────────────────────────────────────────────────────
+function loadFromHashInput() {
+    const input = document.getElementById('hash-input');
+    const hash  = input.value.trim();
+    if (!hash) return;
+    const ok = applyStateHash(hash);
+    if (ok) {
+        history.replaceState(null, '', '?s=' + hash);
+        input.classList.remove('invalid');
+        if (paused) frame();
+    } else {
+        input.classList.add('invalid');
+        setTimeout(() => input.classList.remove('invalid'), 1000);
+    }
+}
+
+document.getElementById('btn-load-hash').addEventListener('click', loadFromHashInput);
+document.getElementById('hash-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') loadFromHashInput();
+});
+
+document.getElementById('btn-copy-link').addEventListener('click', () => {
+    const hash = encodeStateHash();
+    history.replaceState(null, '', '?s=' + hash);
+    document.getElementById('hash-input').value = hash;
+    lastUrlUpdate = Date.now();
+    navigator.clipboard.writeText(location.href).then(() => {
+        const btn = document.getElementById('btn-copy-link');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy Link'; }, 1500);
+    });
+});
 
 document.getElementById('sel-shape').addEventListener('change', e => {
     applyShape(e.target.value);
