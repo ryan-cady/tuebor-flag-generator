@@ -21,6 +21,12 @@ let pendingStateHash  = new URLSearchParams(location.search).get('s');
 function onBothReady() {
     if (!imgLoaded || !svgText) return;
     if (pendingStateHash) {
+        // Pause before applying so reloadSVG's tmp.onload calls frame()
+        cancelAnimationFrame(rafId);
+        rafId = null;
+        paused = true;
+        pauseBtn.textContent = 'Play';
+        pauseBtn.classList.add('active');
         applyStateHash(pendingStateHash);
         document.getElementById('hash-input').value = pendingStateHash;
         pendingStateHash = null;
@@ -83,6 +89,7 @@ function encodeStateHash() {
             ? parseFloat(document.getElementById('sl-' + id).value)
             : document.getElementById(id).value
     );
+    vals.push(parseFloat(time.toFixed(4))); // preserve wave position
     return btoa(JSON.stringify(vals))
         .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -93,7 +100,7 @@ function applyStateHash(encoded) {
         const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
         vals = JSON.parse(atob(b64 + '='.repeat((4 - b64.length % 4) % 4)));
     } catch { return false; }
-    if (!Array.isArray(vals) || vals.length !== STATE_SCHEMA.length) return false;
+    if (!Array.isArray(vals) || vals.length < STATE_SCHEMA.length) return false;
     STATE_SCHEMA.forEach(({ id, type }, i) => {
         const val = vals[i];
         if (type === 'slider') {
@@ -110,6 +117,7 @@ function applyStateHash(encoded) {
     currentBgColor   = document.getElementById('cp-bg').value;
     currentTextColor = document.getElementById('cp-text').value;
     currentShape     = document.getElementById('sel-shape').value;
+    if (vals.length > STATE_SCHEMA.length) time = vals[STATE_SCHEMA.length];
     if (svgText) reloadSVG();
     return true;
 }
