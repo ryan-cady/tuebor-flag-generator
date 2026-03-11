@@ -636,17 +636,24 @@ function buildVectorSVG() {
     }
 
     // ── warp all coordinates in an SVG path d string ───────────────────────────
-    // Handles M/m, L/l, H/h, V/v, C/c, S/s, Z/z. H/V become L since warping
-    // breaks axis-alignment. All relative commands resolved to absolute first.
-    // Cubic beziers are subdivided into line segments so the non-linear warp
-    // is applied accurately along the full curve, not just at control points.
-    const BEZIER_STEPS = 16;
-    function warpCubic(ax, ay, x1, y1, x2, y2, bx, by) {
-        // Emit BEZIER_STEPS line segments sampling the cubic bezier t=[0,1]
+    // Every segment (line or curve) is densely sampled so the non-linear warp
+    // is applied accurately along its full length, not just at endpoints.
+    const SEG_STEPS = 16;
+
+    function warpLine(x0, y0, x1, y1) {
         let seg = '';
-        for (let k = 1; k <= BEZIER_STEPS; k++) {
-            const t  = k / BEZIER_STEPS;
-            const mt = 1 - t;
+        for (let k = 1; k <= SEG_STEPS; k++) {
+            const t = k / SEG_STEPS;
+            const p = warpPt(x0 + (x1-x0)*t, y0 + (y1-y0)*t);
+            seg += `L${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+        }
+        return seg;
+    }
+
+    function warpCubic(ax, ay, x1, y1, x2, y2, bx, by) {
+        let seg = '';
+        for (let k = 1; k <= SEG_STEPS; k++) {
+            const t  = k / SEG_STEPS, mt = 1 - t;
             const sx = mt*mt*mt*ax + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*bx;
             const sy = mt*mt*mt*ay + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*by;
             const p  = warpPt(sx, sy);
@@ -659,7 +666,7 @@ function buildVectorSVG() {
         const tokens = d.match(/[MmLlHhVvCcSsZz]|[-+]?(?:[0-9]*\.)?[0-9]+(?:[eE][-+]?[0-9]+)?/g) || [];
         let out = '', cmd = 'M';
         let cx = 0, cy = 0, sx = 0, sy = 0;
-        let lastCPX = 0, lastCPY = 0; // last cubic control point (for S/s reflection)
+        let lastCPX = 0, lastCPY = 0;
         let i = 0;
         const num = () => parseFloat(tokens[i++]);
 
@@ -668,14 +675,14 @@ function buildVectorSVG() {
             if (i >= tokens.length && cmd !== 'Z' && cmd !== 'z') break;
 
             switch (cmd) {
-                case 'M': { const x=num(),y=num(); cx=x;cy=y;sx=x;sy=y; const p=warpPt(x,y); out+=`M${p.x.toFixed(2)},${p.y.toFixed(2)}`; cmd='L'; break; }
-                case 'm': { const x=cx+num(),y=cy+num(); cx=x;cy=y;sx=x;sy=y; const p=warpPt(x,y); out+=`M${p.x.toFixed(2)},${p.y.toFixed(2)}`; cmd='l'; break; }
-                case 'L': { const x=num(),y=num(); const p=warpPt(x,y); cx=x;cy=y; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
-                case 'l': { const x=cx+num(),y=cy+num(); const p=warpPt(x,y); cx=x;cy=y; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
-                case 'H': { const x=num(); const p=warpPt(x,cy); cx=x; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
-                case 'h': { const x=cx+num(); const p=warpPt(x,cy); cx=x; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
-                case 'V': { const y=num(); const p=warpPt(cx,y); cy=y; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
-                case 'v': { const y=cy+num(); const p=warpPt(cx,y); cy=y; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 'M': { const x=num(),y=num(); cx=x;cy=y;sx=x;sy=y; lastCPX=cx;lastCPY=cy; const p=warpPt(x,y); out+=`M${p.x.toFixed(2)},${p.y.toFixed(2)}`; cmd='L'; break; }
+                case 'm': { const x=cx+num(),y=cy+num(); cx=x;cy=y;sx=x;sy=y; lastCPX=cx;lastCPY=cy; const p=warpPt(x,y); out+=`M${p.x.toFixed(2)},${p.y.toFixed(2)}`; cmd='l'; break; }
+                case 'L': { const x=num(),y=num(); out+=warpLine(cx,cy,x,y); cx=x;cy=y; lastCPX=cx;lastCPY=cy; break; }
+                case 'l': { const x=cx+num(),y=cy+num(); out+=warpLine(cx,cy,x,y); cx=x;cy=y; lastCPX=cx;lastCPY=cy; break; }
+                case 'H': { const x=num(); out+=warpLine(cx,cy,x,cy); cx=x; lastCPX=cx;lastCPY=cy; break; }
+                case 'h': { const x=cx+num(); out+=warpLine(cx,cy,x,cy); cx=x; lastCPX=cx;lastCPY=cy; break; }
+                case 'V': { const y=num(); out+=warpLine(cx,cy,cx,y); cy=y; lastCPX=cx;lastCPY=cy; break; }
+                case 'v': { const y=cy+num(); out+=warpLine(cx,cy,cx,y); cy=y; lastCPX=cx;lastCPY=cy; break; }
                 case 'C': { const x1=num(),y1=num(),x2=num(),y2=num(),x=num(),y=num();
                     lastCPX=x2; lastCPY=y2;
                     out+=warpCubic(cx,cy,x1,y1,x2,y2,x,y); cx=x;cy=y; break; }
@@ -690,7 +697,10 @@ function buildVectorSVG() {
                     const x1=2*cx-lastCPX, y1=2*cy-lastCPY;
                     lastCPX=x2; lastCPY=y2;
                     out+=warpCubic(cx,cy,x1,y1,x2,y2,x,y); cx=x;cy=y; break; }
-                case 'Z': case 'z': cx=sx;cy=sy; lastCPX=cx;lastCPY=cy; out+='Z'; break;
+                case 'Z': case 'z':
+                    out+=warpLine(cx,cy,sx,sy);
+                    cx=sx;cy=sy; lastCPX=cx;lastCPY=cy;
+                    out+='Z'; break;
                 default: i++; break;
             }
         }
