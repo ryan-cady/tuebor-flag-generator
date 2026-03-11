@@ -503,6 +503,7 @@ function frame() {
         const hash = encodeStateHash();
         try { history.replaceState(null, '', '?s=' + hash); } catch {}
         document.getElementById('hash-input').value = hash;
+        document.title = 'Tuebor Flag Gen - ' + hash.slice(0, 8);
         lastUrlUpdate = nowMs;
     }
 
@@ -796,6 +797,52 @@ document.getElementById('btn-export-txt').addEventListener('click', () => {
     const ts        = getTimestamp();
     const shortHash = encodeStateHash().slice(0, 8);
     downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
+});
+
+// ── export all ────────────────────────────────────────────────────────────────
+document.getElementById('btn-export-all').addEventListener('click', () => {
+    const wasPlaying = !paused;
+    if (wasPlaying) {
+        paused = true;
+        pauseBtn.textContent = 'Play';
+        pauseBtn.classList.add('active');
+    }
+
+    const ts        = getTimestamp();
+    const shortHash = encodeStateHash().slice(0, 8);
+    const svgStr    = buildVectorSVG();
+
+    downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.svg`, new Blob([svgStr], { type: 'image/svg+xml' }));
+    downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
+
+    const svgBlob = new Blob([svgStr], { type: 'image/svg+xml' });
+    const svgUrl  = URL.createObjectURL(svgBlob);
+    const wMatch  = svgStr.match(/width="(\d+)"/);
+    const hMatch  = svgStr.match(/height="(\d+)"/);
+    const pngW    = wMatch ? parseInt(wMatch[1]) : canvas.width;
+    const pngH    = hMatch ? parseInt(hMatch[1]) : canvas.height;
+    const tmpImg  = new Image(pngW, pngH);
+    tmpImg.onload = () => {
+        const tmpCanvas = document.createElement('canvas');
+        tmpCanvas.width  = pngW;
+        tmpCanvas.height = pngH;
+        tmpCanvas.getContext('2d').drawImage(tmpImg, 0, 0);
+        URL.revokeObjectURL(svgUrl);
+        downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.png`, new Blob(
+            [Uint8Array.from(atob(tmpCanvas.toDataURL('image/png').split(',')[1]), c => c.charCodeAt(0))],
+            { type: 'image/png' }
+        ));
+        if (wasPlaying) {
+            paused = false;
+            pauseBtn.textContent = 'Pause';
+            pauseBtn.classList.remove('active');
+            startAnimation();
+        }
+    };
+    tmpImg.src = svgUrl;
+
+    if (!wasPlaying) return;
+    // animation restart handled in tmpImg.onload
 });
 
 // ── SVG text / color replacement ─────────────────────────────────────────────
