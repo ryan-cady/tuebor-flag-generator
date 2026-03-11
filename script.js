@@ -622,8 +622,8 @@ function buildVectorSVG() {
     perimD += ' Z';
 
     // ── warp a point from SVG source coordinates to screen coordinates ─────────
-    // Source SVG viewBox is "0 0 358 239".
-    const SVG_W = 358, SVG_H = 239;
+    // Source SVG viewBox is "0 0 1617 1078".
+    const SVG_W = 1617, SVG_H = 1078;
     function warpPt(x, y) {
         const nx = x / SVG_W;
         const ny = y / SVG_H;
