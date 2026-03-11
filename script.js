@@ -35,8 +35,8 @@ function onBothReady() {
 
 const img = new Image(2099, 1399);
 img.onload  = () => { srcCtx.drawImage(img, 0, 0, SRC_W, SRC_H); startAnimation(); imgLoaded = true; onBothReady(); };
-img.onerror = () => console.error('Could not load tuebor-flag-example.svg');
-img.src     = 'tuebor-flag-example.svg';
+img.onerror = () => console.error('Could not load flag svg');
+img.src     = 'tuebor-flag-v2.svg';
 
 // ── slider wiring ─────────────────────────────────────────────────────────────
 const FMT = {
@@ -77,7 +77,6 @@ const STATE_SCHEMA = [
     { id: 'sel-flag-dither',    type: 'select' },
     { id: 'sel-shadow-dither',  type: 'select' },
     { id: 'sel-outline-dither', type: 'select' },
-    { id: 'sel-shape',          type: 'select' },
     { id: 'cp-bg',              type: 'color'  },
     { id: 'cp-text',            type: 'color'  },
     { id: 'cp-shadow-color',    type: 'color'  },
@@ -116,7 +115,6 @@ function applyStateHash(encoded) {
     });
     currentBgColor   = document.getElementById('cp-bg').value;
     currentTextColor = document.getElementById('cp-text').value;
-    currentShape     = document.getElementById('sel-shape').value;
     if (vals.length > STATE_SCHEMA.length) time = vals[STATE_SCHEMA.length];
     if (svgText) reloadSVG();
     return true;
@@ -473,7 +471,7 @@ function frame() {
 
         tgt.beginPath();
         tracePerim(tgt);
-        tgt.strokeStyle = 'white';
+        tgt.strokeStyle = currentTextColor;
         tgt.lineWidth   = outline * 2;
         tgt.lineJoin    = 'round';
         tgt.stroke();
@@ -570,9 +568,6 @@ function getSettingsText(displayTime) {
 
         `  Dither Density: ${lbl('dintensity')}`,
         '',
-        'SHAPE',
-        `  Stars:        ${currentShape}`,
-        '',
         'COLOR',
         `  Background:   ${currentBgColor}`,
         `  Text/Outline: ${currentTextColor}`,
@@ -590,11 +585,11 @@ function downloadBlob(filename, blob) {
     setTimeout(() => URL.revokeObjectURL(url), 200);
 }
 
-// ── export SVG (true vector) ───────────────────────────────────────────────────
-// Builds a fully vector SVG by embedding the flag source as SVG paths in <defs>,
-// then mapping each mesh triangle onto screen space via a <clipPath> + affine
-// <use> transform. Shading and outline are also emitted as vector elements.
-// Dithering effects are raster-only and are omitted from this export.
+// ── export SVG (simplified two-shape) ─────────────────────────────────────────
+// Exports as just two paths: one filled polygon for the flag background (the
+// warped perimeter) and one compound path for all letters/stars with every
+// coordinate individually warped through the same displacement function used
+// by the canvas renderer. Shading/dithering effects are omitted.
 function buildVectorSVG() {
     const flagW   = wrap.clientWidth  * 0.75;
     const flagH   = wrap.clientHeight * 0.75;
@@ -606,7 +601,6 @@ function buildVectorSVG() {
     const vfold   = v('vfold');
     const droop   = v('droop');
     const crinkle = v('crinkle');
-    const shading = v('shading');
     const persp   = v('persp');
     const outline = v('outline');
 
@@ -617,97 +611,110 @@ function buildVectorSVG() {
     const ox   = hPad;
     const oy   = Math.round(ch / 2 - flagH / 2);
 
-    const grid     = buildGrid(flagW, flagH, time, amp, freq, angle, chaos, hfold, vfold, droop, crinkle, persp, ox, oy);
-    const origArea = (flagW / COLS) * (flagH / ROWS);
+    const grid = buildGrid(flagW, flagH, time, amp, freq, angle, chaos, hfold, vfold, droop, crinkle, persp, ox, oy);
 
-    // Strip outer <svg> wrapper so the flag paths can be embedded in <defs>.
-    // The flag SVG has viewBox="0 0 2099 1399"; we scale it to SRC_W×SRC_H UV space.
-    const svgContent = buildModifiedSVG().replace(/^<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
-    const scaleX = (SRC_W / 2099).toFixed(8);
-    const scaleY = (SRC_H / 1399).toFixed(8);
+    // ── flag background: warped perimeter polygon ──────────────────────────────
+    let perimD = `M${grid[0][0].sx.toFixed(2)},${grid[0][0].sy.toFixed(2)}`;
+    for (let c = 1; c <= COLS; c++) perimD += ` L${grid[0][c].sx.toFixed(2)},${grid[0][c].sy.toFixed(2)}`;
+    for (let r = 1; r <= ROWS; r++) perimD += ` L${grid[r][COLS].sx.toFixed(2)},${grid[r][COLS].sy.toFixed(2)}`;
+    for (let c = COLS - 1; c >= 0; c--) perimD += ` L${grid[ROWS][c].sx.toFixed(2)},${grid[ROWS][c].sy.toFixed(2)}`;
+    for (let r = ROWS - 1; r >= 0; r--) perimD += ` L${grid[r][0].sx.toFixed(2)},${grid[r][0].sy.toFixed(2)}`;
+    perimD += ' Z';
 
+    // ── warp a point from SVG source coordinates to screen coordinates ─────────
+    // Source SVG viewBox is "0 0 358 239".
+    const SVG_W = 358, SVG_H = 239;
+    function warpPt(x, y) {
+        const nx = x / SVG_W;
+        const ny = y / SVG_H;
+        const perspScale = 1 + persp * nx;
+        const { dx, dy } = displace(nx, ny, time, amp, freq, angle, chaos, hfold, vfold, droop, crinkle);
+        return {
+            x: ox + nx * flagW + dx,
+            y: oy + flagH * 0.5 + (ny - 0.5) * flagH * perspScale + dy,
+        };
+    }
+
+    // ── warp all coordinates in an SVG path d string ───────────────────────────
+    // Handles M/m, L/l, H/h, V/v, C/c, S/s, Z/z. H/V become L since warping
+    // breaks axis-alignment. All relative commands resolved to absolute first.
+    // S/s (smooth cubic) requires tracking the last cubic control point for reflection.
+    function warpPathD(d) {
+        const tokens = d.match(/[MmLlHhVvCcSsZz]|[-+]?(?:[0-9]*\.)?[0-9]+(?:[eE][-+]?[0-9]+)?/g) || [];
+        let out = '', cmd = 'M';
+        let cx = 0, cy = 0, sx = 0, sy = 0;
+        let lastCPX = 0, lastCPY = 0; // last cubic control point (for S/s reflection)
+        let i = 0;
+        const num = () => parseFloat(tokens[i++]);
+
+        while (i < tokens.length) {
+            if (/[MmLlHhVvCcSsZz]/.test(tokens[i])) cmd = tokens[i++];
+            if (i >= tokens.length && cmd !== 'Z' && cmd !== 'z') break;
+
+            switch (cmd) {
+                case 'M': { const x=num(),y=num(); cx=x;cy=y;sx=x;sy=y; const p=warpPt(x,y); out+=`M${p.x.toFixed(2)},${p.y.toFixed(2)}`; cmd='L'; break; }
+                case 'm': { const x=cx+num(),y=cy+num(); cx=x;cy=y;sx=x;sy=y; const p=warpPt(x,y); out+=`M${p.x.toFixed(2)},${p.y.toFixed(2)}`; cmd='l'; break; }
+                case 'L': { const x=num(),y=num(); const p=warpPt(x,y); cx=x;cy=y; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 'l': { const x=cx+num(),y=cy+num(); const p=warpPt(x,y); cx=x;cy=y; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 'H': { const x=num(); const p=warpPt(x,cy); cx=x; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 'h': { const x=cx+num(); const p=warpPt(x,cy); cx=x; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 'V': { const y=num(); const p=warpPt(cx,y); cy=y; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 'v': { const y=cy+num(); const p=warpPt(cx,y); cy=y; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 'C': { const x1=num(),y1=num(),x2=num(),y2=num(),x=num(),y=num();
+                    lastCPX=x2; lastCPY=y2;
+                    const p1=warpPt(x1,y1),p2=warpPt(x2,y2),p=warpPt(x,y); cx=x;cy=y;
+                    out+=`C${p1.x.toFixed(2)},${p1.y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)} ${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 'c': { const ocx=cx,ocy=cy; const x1=ocx+num(),y1=ocy+num(),x2=ocx+num(),y2=ocy+num(),x=ocx+num(),y=ocy+num();
+                    lastCPX=x2; lastCPY=y2;
+                    const p1=warpPt(x1,y1),p2=warpPt(x2,y2),p=warpPt(x,y); cx=x;cy=y;
+                    out+=`C${p1.x.toFixed(2)},${p1.y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)} ${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 'S': { const x2=num(),y2=num(),x=num(),y=num();
+                    const x1=2*cx-lastCPX, y1=2*cy-lastCPY; // reflected control point
+                    lastCPX=x2; lastCPY=y2;
+                    const p1=warpPt(x1,y1),p2=warpPt(x2,y2),p=warpPt(x,y); cx=x;cy=y;
+                    out+=`C${p1.x.toFixed(2)},${p1.y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)} ${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 's': { const x2=cx+num(),y2=cy+num(),x=cx+num(),y=cy+num();
+                    const x1=2*cx-lastCPX, y1=2*cy-lastCPY; // reflected control point
+                    lastCPX=x2; lastCPY=y2;
+                    const p1=warpPt(x1,y1),p2=warpPt(x2,y2),p=warpPt(x,y); cx=x;cy=y;
+                    out+=`C${p1.x.toFixed(2)},${p1.y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)} ${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                case 'Z': case 'z': cx=sx;cy=sy; lastCPX=cx;lastCPY=cy; out+='Z'; break;
+                default: i++; break;
+            }
+        }
+        return out;
+    }
+
+    // ── extract and warp the white letter/star paths ───────────────────────────
+    const warpedPaths = [];
+    const gMatch = svgText.match(/<g[^>]*fill="#fff"[^>]*>([\s\S]*?)<\/g>/);
+    if (gMatch) {
+        const pathRe = /<path[^>]*\sd="([^"]*)"[^>]*\/?>/g;
+        let m;
+        while ((m = pathRe.exec(gMatch[1])) !== null) {
+            warpedPaths.push(warpPathD(m[1]));
+        }
+    }
+
+    // ── assemble SVG: background + text/stars + optional outline ──────────────
     const defs = [];
     const body = [];
 
-    // ── flag source (scaled to UV space) ──────────────────────────────────────
-    defs.push(`<g id="flag-src" transform="scale(${scaleX},${scaleY})">${svgContent}</g>`);
+    body.push(`<path fill="${currentBgColor}" d="${perimD}"/>`);
 
-    // ── mesh quads ────────────────────────────────────────────────────────────
-    // One quad per cell instead of two triangles, halving the element count.
-    // The affine is derived from the three axis-aligned corners (p00, p10, p01);
-    // coefficients reduce to: a=(Δsx/Δu), c=(Δsx/Δv), b=(Δsy/Δu), d=(Δsy/Δv).
-    // The fourth corner (p11) is approximated by parallelogram completion —
-    // error is the non-affine residual of the quad, typically sub-pixel.
-    for (let r = 0; r < ROWS; r++) {
-        for (let c = 0; c < COLS; c++) {
-            const p00 = grid[r    ][c    ];
-            const p10 = grid[r    ][c + 1];
-            const p01 = grid[r + 1][c    ];
-            const p11 = grid[r + 1][c + 1];
-
-            const du = p10.u - p00.u;
-            const dv = p01.v - p00.v;
-            if (Math.abs(du * dv) < 0.001) continue;
-
-            const ma = (p10.sx - p00.sx) / du;
-            const mb = (p10.sy - p00.sy) / du;
-            const mc = (p01.sx - p00.sx) / dv;
-            const md = (p01.sy - p00.sy) / dv;
-            const me = p00.sx - ma * p00.u - mc * p00.v;
-            const mf = p00.sy - mb * p00.u - md * p00.v;
-
-            const id  = `q${r * COLS + c}`;
-            const pts = `${p00.sx.toFixed(1)},${p00.sy.toFixed(1)} ${p10.sx.toFixed(1)},${p10.sy.toFixed(1)} ${p11.sx.toFixed(1)},${p11.sy.toFixed(1)} ${p01.sx.toFixed(1)},${p01.sy.toFixed(1)}`;
-            const mtx = `${ma.toFixed(5)},${mb.toFixed(5)},${mc.toFixed(5)},${md.toFixed(5)},${me.toFixed(1)},${mf.toFixed(1)}`;
-            defs.push(`<clipPath id="${id}"><polygon points="${pts}"/></clipPath>`);
-            body.push(`<g clip-path="url(#${id})"><use href="#flag-src" transform="matrix(${mtx})"/></g>`);
-        }
+    if (warpedPaths.length > 0) {
+        body.push(`<path fill="${currentTextColor}" d="${warpedPaths.join(' ')}"/>`);
     }
 
-    // ── shading (vector quads, no dithering) ──────────────────────────────────
-    if (shading > 0) {
-        const shadowColor = document.getElementById('cp-shadow-color').value;
-        for (let r = 0; r < ROWS; r++) {
-            for (let c = 0; c < COLS; c++) {
-                const p00 = grid[r    ][c    ];
-                const p10 = grid[r    ][c + 1];
-                const p01 = grid[r + 1][c    ];
-                const p11 = grid[r + 1][c + 1];
-                const ex = p10.sx - p00.sx, ey = p01.sx - p00.sx;
-                const fx = p10.sy - p00.sy, fy = p01.sy - p00.sy;
-                const ratio = (ex * fy - fx * ey) / origArea;
-                if (ratio < 0.99) {
-                    const alpha = (shading * Math.min(1, Math.max(0, 1 - ratio)) * 0.75).toFixed(3);
-                    const pts   = `${p00.sx.toFixed(1)},${p00.sy.toFixed(1)} ${p10.sx.toFixed(1)},${p10.sy.toFixed(1)} ${p11.sx.toFixed(1)},${p11.sy.toFixed(1)} ${p01.sx.toFixed(1)},${p01.sy.toFixed(1)}`;
-                    body.push(`<polygon fill="${shadowColor}" fill-opacity="${alpha}" points="${pts}"/>`);
-                }
-            }
-        }
-    }
-
-    // ── outline (clipped to outside of flag via evenodd compound path) ─────────
     if (outline > 0) {
-        // Trace the flag perimeter as an SVG path string
-        let perimD = `M${grid[0][0].sx.toFixed(1)},${grid[0][0].sy.toFixed(1)}`;
-        for (let c = 1; c <= COLS; c++) perimD += ` L${grid[0][c].sx.toFixed(1)},${grid[0][c].sy.toFixed(1)}`;
-        for (let r = 1; r <= ROWS; r++) perimD += ` L${grid[r][COLS].sx.toFixed(1)},${grid[r][COLS].sy.toFixed(1)}`;
-        for (let c = COLS - 1; c >= 0; c--) perimD += ` L${grid[ROWS][c].sx.toFixed(1)},${grid[ROWS][c].sy.toFixed(1)}`;
-        for (let r = ROWS - 1; r >= 0; r--) perimD += ` L${grid[r][0].sx.toFixed(1)},${grid[r][0].sy.toFixed(1)}`;
-        perimD += ' Z';
-
-        // Clip region = full viewport minus flag interior (evenodd on compound path)
-        defs.push(`<clipPath id="outline-clip"><path clip-rule="evenodd" d="M0,0 H${cw} V${ch} H0 Z ${perimD}"/></clipPath>`);
-        body.push(`<g clip-path="url(#outline-clip)"><path fill="none" stroke="white" stroke-width="${(outline * 2).toFixed(1)}" stroke-linejoin="round" d="${perimD}"/></g>`);
+        defs.push(`<clipPath id="oc"><path clip-rule="evenodd" d="M0,0 H${cw} V${ch} H0 Z ${perimD}"/></clipPath>`);
+        body.push(`<g clip-path="url(#oc)"><path fill="none" stroke="${currentTextColor}" stroke-width="${(outline * 2).toFixed(1)}" stroke-linejoin="round" d="${perimD}"/></g>`);
     }
 
-    return [
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${ch}" viewBox="0 0 ${cw} ${ch}">`,
-        '<defs>',
-        ...defs,
-        '</defs>',
-        ...body,
-        '</svg>',
-    ].join('\n');
+    const parts = [`<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${ch}" viewBox="0 0 ${cw} ${ch}">`];
+    if (defs.length) parts.push('<defs>', ...defs, '</defs>');
+    parts.push(...body, '</svg>');
+    return parts.join('\n');
 }
 
 document.getElementById('btn-export').addEventListener('click', () => {
@@ -733,137 +740,48 @@ document.getElementById('btn-export').addEventListener('click', () => {
 });
 
 // ── export PNG ────────────────────────────────────────────────────────────────
+// Renders the simplified vector SVG to an offscreen canvas, then exports as PNG.
 document.getElementById('btn-export-png').addEventListener('click', () => {
     const ts        = getTimestamp();
     const shortHash = encodeStateHash().slice(0, 8);
-    downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.png`, new Blob(
-        [Uint8Array.from(atob(canvas.toDataURL('image/png').split(',')[1]), c => c.charCodeAt(0))],
-        { type: 'image/png' }
-    ));
-    downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
+    const svgStr    = buildVectorSVG();
+    const svgBlob   = new Blob([svgStr], { type: 'image/svg+xml' });
+    const svgUrl    = URL.createObjectURL(svgBlob);
+
+    // Parse width/height from the SVG string to size the offscreen canvas correctly
+    const wMatch = svgStr.match(/width="(\d+)"/);
+    const hMatch = svgStr.match(/height="(\d+)"/);
+    const pngW = wMatch ? parseInt(wMatch[1]) : canvas.width;
+    const pngH = hMatch ? parseInt(hMatch[1]) : canvas.height;
+
+    const tmpImg = new Image(pngW, pngH);
+    tmpImg.onload = () => {
+        const tmpCanvas = document.createElement('canvas');
+        tmpCanvas.width  = pngW;
+        tmpCanvas.height = pngH;
+        const tmpCtx = tmpCanvas.getContext('2d');
+        tmpCtx.drawImage(tmpImg, 0, 0);
+        URL.revokeObjectURL(svgUrl);
+        downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.png`, new Blob(
+            [Uint8Array.from(atob(tmpCanvas.toDataURL('image/png').split(',')[1]), c => c.charCodeAt(0))],
+            { type: 'image/png' }
+        ));
+        downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
+    };
+    tmpImg.src = svgUrl;
 });
 
-// ── star shape replacement ────────────────────────────────────────────────────
+// ── SVG text / color replacement ─────────────────────────────────────────────
 let svgText = '';
 
-const STAR_DEFS = [
-    { d: 'm1280.95 1216.94-20.63-63.49h-66.75l54-39.23-20.62-63.48 54 39.23 54-39.23-20.63 63.48 54 39.23h-66.75z',   cx: 1280.95, cy: 1133.84 },
-    { d: 'm1081.89 1035.09 20.63 63.49h66.75l-54 39.23 20.62 63.48-54-39.23-54 39.23 20.63-63.48-54-39.23h66.75z',     cx: 1081.89, cy: 1118.19 },
-    { d: 'm875.185 1216.94-20.626-63.49h-66.747l54-39.23-20.627-63.48 54 39.23 54-39.23-20.626 63.48 54 39.23h-66.747z', cx: 875.19,  cy: 1133.84 },
-];
-
-const SHAPE_R = 78;
-
-function polyPoints(cx, cy, r, n, rot) {
-    const pts = [];
-    for (let i = 0; i < n; i++) {
-        const a = rot + (i / n) * Math.PI * 2;
-        pts.push(`${(cx + r * Math.cos(a)).toFixed(2)},${(cy + r * Math.sin(a)).toFixed(2)}`);
-    }
-    return pts.join(' ');
-}
-
-function starPoints(cx, cy, R, ri, n) {
-    const pts = [];
-    for (let i = 0; i < n * 2; i++) {
-        const a   = -Math.PI / 2 + (i / (n * 2)) * Math.PI * 2;
-        const rad = i % 2 === 0 ? R : ri;
-        pts.push(`${(cx + rad * Math.cos(a)).toFixed(2)},${(cy + rad * Math.sin(a)).toFixed(2)}`);
-    }
-    return pts.join(' ');
-}
-
-function heartPoints(cx, cy, r) {
-    const scale = r / 16;
-    const pts   = [];
-    for (let i = 0; i <= 72; i++) {
-        const t  = (i / 72) * Math.PI * 2;
-        const hx = 16 * Math.pow(Math.sin(t), 3);
-        const hy = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
-        pts.push(`${(cx + hx * scale).toFixed(2)},${(cy - (hy + 2.75) * scale).toFixed(2)}`);
-    }
-    return pts.join(' ');
-}
-
-function shapeToSVG(name, cx, cy, r) {
-    const f = n => n.toFixed(2);
-    switch (name) {
-        case 'Circle':
-            return `<circle cx="${f(cx)}" cy="${f(cy)}" r="${f(r)}"/>`;
-
-        case 'Triangle':    return `<polygon points="${polyPoints(cx, cy, r, 3, -Math.PI / 2)}"/>`;
-        case 'Square':      return `<polygon points="${polyPoints(cx, cy, r, 4, -Math.PI / 4)}"/>`;
-        case 'Diamond':     return `<polygon points="${polyPoints(cx, cy, r, 4, 0)}"/>`;
-        case 'Pentagon':    return `<polygon points="${polyPoints(cx, cy, r, 5, -Math.PI / 2)}"/>`;
-        case 'Hexagon':     return `<polygon points="${polyPoints(cx, cy, r, 6, 0)}"/>`;
-        case 'Octagon':     return `<polygon points="${polyPoints(cx, cy, r, 8, Math.PI / 8)}"/>`;
-
-        case 'Star 4-pt':   return `<polygon points="${starPoints(cx, cy, r, r * 0.38, 4)}"/>`;
-        case 'Star 6-pt':   return `<polygon points="${starPoints(cx, cy, r, r * 0.50, 6)}"/>`;
-
-        case 'Heart':       return `<polygon points="${heartPoints(cx, cy, r)}"/>`;
-
-        case 'Ring': {
-            const r2 = r * 0.48;
-            const d  = [
-                `M${f(cx - r)} ${f(cy)} A${f(r)} ${f(r)} 0 1 0 ${f(cx + r)} ${f(cy)}`,
-                `A${f(r)} ${f(r)} 0 1 0 ${f(cx - r)} ${f(cy)} Z`,
-                `M${f(cx - r2)} ${f(cy)} A${f(r2)} ${f(r2)} 0 1 0 ${f(cx + r2)} ${f(cy)}`,
-                `A${f(r2)} ${f(r2)} 0 1 0 ${f(cx - r2)} ${f(cy)} Z`,
-            ].join(' ');
-            return `<path fill-rule="evenodd" d="${d}"/>`;
-        }
-
-        case 'Cross': {
-            const t  = r * 0.34;
-            const d  = [
-                `M${f(cx - t)} ${f(cy - r)}`,
-                `h${f(t * 2)} v${f(r - t)} h${f(r - t)} v${f(t * 2)}`,
-                `h${f(-(r - t))} v${f(r - t)} h${f(-t * 2)} v${f(-(r - t))}`,
-                `h${f(-(r - t))} v${f(-t * 2)} h${f(r - t)} Z`,
-            ].join(' ');
-            return `<path d="${d}"/>`;
-        }
-
-        case 'Arrow': {
-            const stem = r * 0.32, head = r * 0.52;
-            const pts  = [
-                `${f(cx)},${f(cy - r)}`,
-                `${f(cx + r)},${f(cy - r + head)}`,
-                `${f(cx + stem)},${f(cy - r + head)}`,
-                `${f(cx + stem)},${f(cy + r)}`,
-                `${f(cx - stem)},${f(cy + r)}`,
-                `${f(cx - stem)},${f(cy - r + head)}`,
-                `${f(cx - r)},${f(cy - r + head)}`,
-            ].join(' ');
-            return `<polygon points="${pts}"/>`;
-        }
-
-        default: return '';
-    }
-}
-
-const SHAPE_NAMES = [
-    'Circle', 'Triangle', 'Square', 'Diamond', 'Pentagon',
-    'Hexagon', 'Octagon', 'Star 4-pt', 'Star 6-pt',
-    'Heart', 'Ring', 'Cross', 'Arrow',
-];
-
-let currentShape     = 'Original';
-let currentBgColor   = '#33393d';
+let currentBgColor   = '#000000';
 let currentTextColor = '#ffffff';
 
 function buildModifiedSVG() {
     let modified = svgText;
-    // Shape replacement
-    for (const { d, cx, cy } of STAR_DEFS) {
-        const original    = `<path d="${d}"/>`;
-        const replacement = currentShape === 'Original' ? original : shapeToSVG(currentShape, cx, cy, SHAPE_R);
-        modified = modified.replace(original, replacement);
-    }
     // Color replacement — match quoted attribute values to avoid partial matches
-    modified = modified.replaceAll('"#33393d"', `"${currentBgColor}"`);
-    modified = modified.replaceAll('"#fff"',    `"${currentTextColor}"`);
+    modified = modified.replaceAll('"#000"', `"${currentBgColor}"`);
+    modified = modified.replaceAll('"#fff"', `"${currentTextColor}"`);
     return modified;
 }
 
@@ -881,14 +799,7 @@ function reloadSVG() {
     tmp.src = url;
 }
 
-function applyShape(name) {
-    if (!svgText) return;
-    currentShape = name;
-    document.getElementById('sel-shape').value = name;
-    reloadSVG();
-}
-
-fetch('tuebor-flag-example.svg').then(r => r.text()).then(t => {
+fetch('tuebor-flag-v2.svg').then(r => r.text()).then(t => {
     svgText = t;
     onBothReady();
 });
@@ -930,10 +841,6 @@ document.getElementById('btn-copy-link').addEventListener('click', () => {
         btn.textContent = 'Copied!';
         setTimeout(() => { btn.textContent = 'Copy Link'; }, 1500);
     });
-});
-
-document.getElementById('sel-shape').addEventListener('change', e => {
-    applyShape(e.target.value);
 });
 
 document.getElementById('cp-bg').addEventListener('input',   e => { currentBgColor   = e.target.value; reloadSVG(); });
