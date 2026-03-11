@@ -638,7 +638,23 @@ function buildVectorSVG() {
     // ── warp all coordinates in an SVG path d string ───────────────────────────
     // Handles M/m, L/l, H/h, V/v, C/c, S/s, Z/z. H/V become L since warping
     // breaks axis-alignment. All relative commands resolved to absolute first.
-    // S/s (smooth cubic) requires tracking the last cubic control point for reflection.
+    // Cubic beziers are subdivided into line segments so the non-linear warp
+    // is applied accurately along the full curve, not just at control points.
+    const BEZIER_STEPS = 16;
+    function warpCubic(ax, ay, x1, y1, x2, y2, bx, by) {
+        // Emit BEZIER_STEPS line segments sampling the cubic bezier t=[0,1]
+        let seg = '';
+        for (let k = 1; k <= BEZIER_STEPS; k++) {
+            const t  = k / BEZIER_STEPS;
+            const mt = 1 - t;
+            const sx = mt*mt*mt*ax + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*bx;
+            const sy = mt*mt*mt*ay + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*by;
+            const p  = warpPt(sx, sy);
+            seg += `L${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+        }
+        return seg;
+    }
+
     function warpPathD(d) {
         const tokens = d.match(/[MmLlHhVvCcSsZz]|[-+]?(?:[0-9]*\.)?[0-9]+(?:[eE][-+]?[0-9]+)?/g) || [];
         let out = '', cmd = 'M';
@@ -662,22 +678,18 @@ function buildVectorSVG() {
                 case 'v': { const y=cy+num(); const p=warpPt(cx,y); cy=y; out+=`L${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
                 case 'C': { const x1=num(),y1=num(),x2=num(),y2=num(),x=num(),y=num();
                     lastCPX=x2; lastCPY=y2;
-                    const p1=warpPt(x1,y1),p2=warpPt(x2,y2),p=warpPt(x,y); cx=x;cy=y;
-                    out+=`C${p1.x.toFixed(2)},${p1.y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)} ${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                    out+=warpCubic(cx,cy,x1,y1,x2,y2,x,y); cx=x;cy=y; break; }
                 case 'c': { const ocx=cx,ocy=cy; const x1=ocx+num(),y1=ocy+num(),x2=ocx+num(),y2=ocy+num(),x=ocx+num(),y=ocy+num();
                     lastCPX=x2; lastCPY=y2;
-                    const p1=warpPt(x1,y1),p2=warpPt(x2,y2),p=warpPt(x,y); cx=x;cy=y;
-                    out+=`C${p1.x.toFixed(2)},${p1.y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)} ${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                    out+=warpCubic(cx,cy,x1,y1,x2,y2,x,y); cx=x;cy=y; break; }
                 case 'S': { const x2=num(),y2=num(),x=num(),y=num();
-                    const x1=2*cx-lastCPX, y1=2*cy-lastCPY; // reflected control point
+                    const x1=2*cx-lastCPX, y1=2*cy-lastCPY;
                     lastCPX=x2; lastCPY=y2;
-                    const p1=warpPt(x1,y1),p2=warpPt(x2,y2),p=warpPt(x,y); cx=x;cy=y;
-                    out+=`C${p1.x.toFixed(2)},${p1.y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)} ${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                    out+=warpCubic(cx,cy,x1,y1,x2,y2,x,y); cx=x;cy=y; break; }
                 case 's': { const x2=cx+num(),y2=cy+num(),x=cx+num(),y=cy+num();
-                    const x1=2*cx-lastCPX, y1=2*cy-lastCPY; // reflected control point
+                    const x1=2*cx-lastCPX, y1=2*cy-lastCPY;
                     lastCPX=x2; lastCPY=y2;
-                    const p1=warpPt(x1,y1),p2=warpPt(x2,y2),p=warpPt(x,y); cx=x;cy=y;
-                    out+=`C${p1.x.toFixed(2)},${p1.y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)} ${p.x.toFixed(2)},${p.y.toFixed(2)}`; break; }
+                    out+=warpCubic(cx,cy,x1,y1,x2,y2,x,y); cx=x;cy=y; break; }
                 case 'Z': case 'z': cx=sx;cy=sy; lastCPX=cx;lastCPY=cy; out+='Z'; break;
                 default: i++; break;
             }
