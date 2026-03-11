@@ -751,7 +751,6 @@ document.getElementById('btn-export').addEventListener('click', () => {
     const shortHash = encodeStateHash().slice(0, 8);
 
     downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.svg`, new Blob([buildVectorSVG()], { type: 'image/svg+xml' }));
-    downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
 
     if (wasPlaying) {
         paused = false;
@@ -788,9 +787,15 @@ document.getElementById('btn-export-png').addEventListener('click', () => {
             [Uint8Array.from(atob(tmpCanvas.toDataURL('image/png').split(',')[1]), c => c.charCodeAt(0))],
             { type: 'image/png' }
         ));
-        downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
     };
     tmpImg.src = svgUrl;
+});
+
+// ── export settings TXT ───────────────────────────────────────────────────────
+document.getElementById('btn-export-txt').addEventListener('click', () => {
+    const ts        = getTimestamp();
+    const shortHash = encodeStateHash().slice(0, 8);
+    downloadBlob(`tuebor-flag_${ts.file}_${shortHash}.txt`, new Blob([getSettingsText(ts.display)], { type: 'text/plain' }));
 });
 
 // ── SVG text / color replacement ─────────────────────────────────────────────
